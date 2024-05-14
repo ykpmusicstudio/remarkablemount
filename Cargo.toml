@@ -1,5 +1,5 @@
 [workspace]
-members = ["simple","rmkmount","sftp_rkfs"]
+members = ["rmkmount","sftp_rkfs"]
 
 #workspace = { members = ["sftp_rkfs","rmkmount","simple"] }
 #[package]
