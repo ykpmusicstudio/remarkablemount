@@ -1,7 +1,6 @@
 use clap::{Parser, Subcommand};
 
 use log::{debug, error, info, trace, warn, LevelFilter};
-use std::path::Path;
 
 /// Remarkable tablet fuse driver
 #[derive(Parser, Debug)]
@@ -19,6 +18,9 @@ struct Args {
     /// hostname and user login as <[USER@]HOST[:PORT]>
     #[arg(long, default_value = "root@10.11.99.1:22")]
     host: String,
+    /// ssh password to remarkable tablet
+    #[arg(long, default_value = "xxx")]
+    password: String,
 
     #[command(subcommand)]
     command: Commands,
@@ -38,19 +40,18 @@ enum Commands {
     Umount {},
 }
 
-// TODO remove password !!
-const RK_PWD: &str = "i7GHdeZBqn";
+// TODO handle password via ssh hosts ?
 // TODO handle Rk root path
 const RK_ROOTPATH: &str = "/home/root/.local/share/remarkable/xochitl/";
 
-fn mount_rkfs(mountpoint: &str, addr: &str, port: u16, user: &str) {
+fn mount_rkfs(mountpoint: &str, addr: &str, port: u16, user: &str, password: &str) {
     info!("Mounting to {mountpoint} from {user}@{addr}");
     let _rfs = sftp_rkfs::RemarkableFsBuilder::new()
         .mountpoint(mountpoint)
         .host(addr)
         .port(port)
         .user(user)
-        .password(RK_PWD)
+        .password(password)
         .document_root(RK_ROOTPATH)
         .build()
         .expect("Failed to build RemarkableFs structure");
@@ -69,7 +70,13 @@ fn main() {
         }
         Commands::Mount { mountpoint } => {
             if let Some(usr) = args.username {
-                mount_rkfs(mountpoint, &args.address, args.port.unwrap_or(22), &usr);
+                mount_rkfs(
+                    mountpoint,
+                    &args.address,
+                    args.port.unwrap_or(22),
+                    &usr,
+                    &args.password,
+                );
             }
         }
         Commands::Umount {} => {

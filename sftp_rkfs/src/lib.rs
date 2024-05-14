@@ -37,7 +37,7 @@ pub struct RemarkableFsBuilder {
 }
 
 impl RemarkableFsBuilder {
-    const RK_PWD: &'static str = "i7GHdeZBqn";
+    const RK_PWD: &'static str = "xxx";
     const RK_USR: &'static str = "root";
     const RK_ADDRESS: &'static str = "10.11.99.1";
     const RK_ROOTPATH: &'static str = "/home/root/.local/share/remarkable/xochitl/";
@@ -127,6 +127,8 @@ mod tests {
     static INIT: Once = Once::new();
 
     const TEST_MOUNTPOINT: &'static str = "/home/pelleter/reMarkable/fs";
+    // put here ssh password of tested device
+    const TEST_PASSWORD: &'static str = "XXXXXXXX";
 
     fn init() {
         INIT.call_once(|| simple_logger::init_with_level(log::Level::Trace).unwrap());
@@ -150,7 +152,7 @@ mod tests {
             .host(RemarkableFsBuilder::RK_ADDRESS)
             .port(22)
             .user(RemarkableFsBuilder::RK_USR)
-            .password(RemarkableFsBuilder::RK_PWD)
+            .password(TEST_PASSWORD)
             .document_root(RemarkableFsBuilder::RK_ROOTPATH)
             .build();
         assert!(
