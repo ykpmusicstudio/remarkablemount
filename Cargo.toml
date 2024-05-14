@@ -1,0 +1,26 @@
+[workspace]
+members = ["simple","rmkmount","sftp_rkfs"]
+
+#workspace = { members = ["sftp_rkfs","rmkmount","simple"] }
+#[package]
+#name = "remarkablemount"
+#version = "0.1.0"
+#edition = "2021"
+
+#[dependencies]
+#rmkmount = { path = "rmkmount"}
+#sftp_rkfs = { path = "sftp_rkfs"}
+#simple = { path = "simple"}
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+#[lib]
+#name = "sftp_rkfs"
+#path = "./sftp_rkfs/src/lib.rs"
+
+#[[bin]]
+#name = "rmkmount"
+#path = "./rmkmount"
+
+#[[bin]]
+#name = "simple"
+#path = "./simple/src/simple.rs"

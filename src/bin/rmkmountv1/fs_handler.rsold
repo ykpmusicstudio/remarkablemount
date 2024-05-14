@@ -1,0 +1,253 @@
+use crate::rk_filesystem::{FsBuilder, RkFileStat, RkNode, RkNodeType};
+use fuser::{
+    FileAttr, Filesystem, KernelConfig, MountOption, ReplyAttr, ReplyCreate, ReplyData,
+    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr,
+    Request, TimeOrNow, FUSE_ROOT_ID,
+};
+use libc::{c_int, EBADF, ENOENT};
+use log::{debug, error, info, trace, warn, LevelFilter};
+use ssh2::FileStat;
+use std::time::{Duration, SystemTime};
+use std::{
+    cell::RefCell,
+    ffi::{OsStr, OsString},
+    path::Path,
+};
+
+#[cfg(not(test))]
+use stderrlog::LogLevelNum;
+
+// #[cfg(test)]
+
+const FB_BLOCK_SIZE: u32 = 512;
+static ROOT_ATTR: fuser::FileAttr = fuser::FileAttr {
+    ino: fuser::FUSE_ROOT_ID,
+    size: 0,
+    blocks: 0,
+    atime: SystemTime::UNIX_EPOCH,
+    mtime: SystemTime::UNIX_EPOCH,
+    ctime: SystemTime::UNIX_EPOCH,
+    crtime: SystemTime::UNIX_EPOCH,
+    kind: fuser::FileType::Directory,
+    perm: 0o555,
+    nlink: 2,
+    uid: 0,
+    gid: 0,
+    rdev: 0,
+    blksize: FB_BLOCK_SIZE,
+    flags: 0,
+};
+
+/*
+impl From<RefCell<RkNode>> for FileAttr {
+    fn from(rknode: RefCell<RkNode>) -> Self {
+        fuser::FileAttr {
+            ino: rknode.borrow().ino,
+            size: rknode.borrow().file_stat.size,
+            blocks: (rknode.borrow().file_stat.size + FB_BLOCK_SIZE - 1) / FB_BLOCK_SIZE,
+            atime: rknode.borrow().file_stat.atime,
+            mtime: rknode.borrow().file_stat.mtime,
+            ctime: 0,
+            ctime: SystemTime::UNIX_EPOCH,
+            crtime: SystemTime::UNIX_EPOCH,
+            kind: fuser::FileType::RegularFile,
+            perm: rknode.borrow().file_stat.perm,
+            nlink: false,
+            uid: rknode.borrow().file_stat.uid,
+            gid: rknode.borrow().file_stat.gid,
+            blksize: FB_BLOCK_SIZE,
+            rdev: 0,
+            flags: 0,
+        }
+    }
+}*/
+
+impl From<RkFileStat> for FileAttr {
+    fn from(rkstat: RkFileStat) -> Self {
+        fuser::FileAttr {
+            ino: rkstat.get_ino(),
+            size: rkstat.get_size(),
+            blocks: (rkstat.get_size() as u64 + FB_BLOCK_SIZE as u64 - 1) / FB_BLOCK_SIZE as u64,
+            atime: rkstat.get_atime().unwrap_or(SystemTime::UNIX_EPOCH),
+            mtime: rkstat.get_mtime().unwrap_or(SystemTime::UNIX_EPOCH),
+            ctime: rkstat.get_ctime().unwrap_or(SystemTime::UNIX_EPOCH),
+            crtime: SystemTime::UNIX_EPOCH,
+            kind: match rkstat.get_kind() {
+                Some(RkNodeType::DocumentType) => fuser::FileType::RegularFile,
+                Some(RkNodeType::CollectionType) => fuser::FileType::Directory,
+                None => fuser::FileType::Directory,
+            },
+            perm: rkstat.get_perm().unwrap_or(0o444),
+            nlink: 1,
+            uid: rkstat.get_uid().unwrap_or(0),
+            gid: rkstat.get_gid().unwrap_or(0),
+            blksize: FB_BLOCK_SIZE,
+            rdev: 0,
+            flags: 0,
+        }
+    }
+}
+impl Filesystem for FsBuilder {
+    fn init(&mut self, _req: &Request, _config: &mut KernelConfig) -> Result<(), c_int> {
+        info!("Initializing fs handler...");
+        Ok(())
+    }
+
+    fn lookup(&mut self, _req: &Request, _parent: u64, _name: &OsStr, reply: ReplyEntry) {
+        info!("lookup request {:?}", _req);
+        if let Some(fstat) = self.lookup_name_ino(_parent, _name) {
+            let file_attr: FileAttr = fstat.into();
+            info!("reply {file_attr:?}");
+            reply.entry(&Duration::new(1, 0), &file_attr, 0);
+        } else {
+            error!("reply NOENT");
+            reply.error(ENOENT);
+        }
+    }
+
+    fn getattr(&mut self, _req: &Request, _ino: u64, reply: ReplyAttr) {
+        info!("getattr request {:?}", _req);
+        match _ino {
+            fuser::FUSE_ROOT_ID => {
+                info!("getattr response: {ROOT_ATTR:?}");
+                reply.attr(&Duration::new(1, 0), &ROOT_ATTR)
+            }
+            _ => {
+                let node = self.get_node_from_ino(_ino);
+                if let Some(vnode) = node {
+                    let rkfstat = vnode.borrow().get_file_stat();
+                    if let Ok(rkfs) = rkfstat {
+                        let file_attr: FileAttr = rkfs.into();
+                        info!("getattr response: {file_attr:?}");
+                        reply.attr(&Duration::new(1, 0), &file_attr);
+                    } else {
+                        error!("reply EBADF");
+                        reply.error(EBADF);
+                    }
+                } else {
+                    error!("reply NOENT");
+                    reply.error(ENOENT);
+                }
+            }
+        }
+    }
+
+    fn opendir(&mut self, _req: &Request, _ino: u64, _flags: i32, reply: ReplyOpen) {
+        info!("opendir request {:?}", _req);
+        reply.opened(_ino, 0);
+    }
+
+    fn readdir(
+        &mut self,
+        _req: &Request,
+        _ino: u64,
+        _fh: u64,
+        _offset: i64,
+        mut reply: ReplyDirectory,
+    ) {
+        info!("readdir request {:?}", _req);
+        let dir_nodes = match _ino {
+            fuser::FUSE_ROOT_ID => self.get_root_nodes(),
+            _ => {
+                let curnode = self.get_node_from_ino(_ino);
+                if let Some(curnode) = curnode {
+                    self.get_node_children(curnode)
+                } else {
+                    error!("reply NOENT");
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+        };
+        let vreply: Vec<(u64, i64, fuser::FileType, OsString)> = dir_nodes
+            .into_iter()
+            .filter(|&node| {
+                let bnode = node.borrow();
+                bnode.get_visible_name().is_some() && bnode.get_file_stat().is_ok()
+            })
+            .enumerate()
+            .skip(_offset as usize)
+            .map(|(idx, rcnode)| {
+                let rnode = rcnode.borrow();
+                let fattr: fuser::FileAttr = rnode.get_file_stat().unwrap().into();
+                let nino = rnode.get_ino();
+                let vname = rnode.get_visible_name().unwrap();
+                (nino, idx as i64 + 1, fattr.kind, OsString::from(vname))
+            })
+            .collect();
+        let _res = vreply.into_iter().try_for_each(|(ino, idx, kind, name)| {
+            info!(
+                "READDIR reply ofs={} ino=[{}] {:?} {:?}",
+                idx, ino, kind, name
+            );
+            if reply.add(ino, idx, kind, name.as_os_str()) {
+                warn!("READDIR buffer full at idx {:?}", idx);
+                Err("buffer full")
+            } else {
+                Ok(())
+            }
+        });
+        info!("READDIR reply {:?}", _res);
+        reply.ok();
+    }
+}
+
+impl FsBuilder {
+    pub fn get_options(&self) -> Vec<MountOption> {
+        vec![
+            MountOption::RO,
+            MountOption::FSName("Remarkable".to_string()),
+        ]
+    }
+
+    pub fn get_mountpoint(&self) -> String {
+        "/home/pelleter/reMarkable/fs".to_string()
+    }
+
+    /*
+    pub fn mount(&self, mountpoint: &str) -> Result<()> {
+        let options = vec![
+            sssh_helperMountOption::RO,
+            MountOption::FSName("Remarkable".to_string()),
+        ];
+        fuser::mount2(self, mountpoint, &options)
+    }*/
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ssh_helper::SshHelper;
+    const RK_PWD: &str = "i7GHdeZBqn";
+    const RK_USR: &str = "root";
+    const RK_ADDRESS: &str = "10.11.99.1:22";
+    const RK_ADDRESS_BAD: &str = "10.11.99.2:22";
+    const RK_ROOTPATH: &str = "/home/root/.local/share/remarkable/xochitl/";
+
+    #[test]
+    fn test_mount() {
+        //simple_logger::init_with_level(log::Level::Trace).unwrap();
+
+        let mut fsb = FsBuilder::new(SshHelper::new());
+        let options = fsb.get_options();
+        let mountpoint = fsb.get_mountpoint();
+        fsb.connect_device(RK_ADDRESS, RK_USR, RK_PWD)
+            .expect("Err when authenticating with remarkable tablet.");
+        /*
+        // read base directory
+        fsb
+            //.ssh_helper
+            .build_fs(Path::new(RK_ROOTPATH))
+            .expect("Err when constucting fsBuilder");
+        fsb.update_tree();
+
+        let result = fuser::mount2(fsb, mountpoint, &options);
+        match result {
+            Ok(_) => {
+                assert!(false, "Succes!");
+            }
+            Err(e) => assert!(false, "Failed to mount: {:?}", e),
+        }*/
+        assert!(false);
+    }
+}
