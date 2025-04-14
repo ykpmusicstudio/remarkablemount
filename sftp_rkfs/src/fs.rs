@@ -7,7 +7,7 @@ use std::borrow::{Borrow, BorrowMut};
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::time::Duration;
-use std::usize;
+//use std::usize;
 use std::{cell::Ref, cell::RefCell, collections::HashMap};
 
 impl From<&Node> for fuser::FileAttr {
@@ -15,8 +15,9 @@ impl From<&Node> for fuser::FileAttr {
         fuser::FileAttr {
             ino: node.get_ino() as u64,
             size: node.get_size(),
-            blocks: (node.get_size() + RemarkableFsBuilder::FB_BLOCK_SIZE as u64 - 1)
-                / RemarkableFsBuilder::FB_BLOCK_SIZE as u64,
+            blocks: u64::div_ceil(node.get_size(), RemarkableFsBuilder::FB_BLOCK_SIZE as u64),
+            /*(node.get_size() + RemarkableFsBuilder::FB_BLOCK_SIZE as u64 - 1)
+            / RemarkableFsBuilder::FB_BLOCK_SIZE as u64,*/
             atime: node.get_atime(),
             mtime: node.get_mtime(),
             ctime: node.get_ctime(),
@@ -250,7 +251,13 @@ impl fuser::Filesystem for RemarkableFs {
         //reply.opened(_ino, 0);
     }*/
 
-    fn getattr(&mut self, _req: &fuser::Request<'_>, ino: u64, reply: fuser::ReplyAttr) {
+    fn getattr(
+        &mut self,
+        _req: &fuser::Request<'_>,
+        ino: u64,
+        _option: Option<u64>,
+        reply: fuser::ReplyAttr,
+    ) {
         //info!("getattr request {:?}", _req);
         if let Some(node) = self.get_node(ino as usize) {
             let fileattr: fuser::FileAttr = node.borrow().deref().into();
@@ -491,7 +498,7 @@ impl RemarkableFs {
 
     #[cfg(test)]
     /// For tests purposes of node_readir from library main lib.rs
-    pub fn pub_readdir(&mut self, ino: usize) -> Result<&[FuserChild], RemarkableError> {
+    pub fn pub_readdir(&mut self, ino: usize) -> Result<Ref<[FuserChild]>, RemarkableError> {
         self.node_readdir(ino, 0)
     }
 }
